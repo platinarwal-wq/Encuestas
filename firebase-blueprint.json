@@ -1,0 +1,194 @@
+{
+  "entities": {
+    "StateBatch": {
+      "title": "StateBatch",
+      "description": "Metadata record representing an uploaded Excel block of survey responses (typically 100 people) for a specific Mexican state.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the researcher who uploaded the state block.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "batchCode": {
+          "type": "string",
+          "description": "Human-readable code for the state block upload.",
+          "minLength": 3,
+          "maxLength": 80
+        },
+        "entidad": {
+          "type": "string",
+          "description": "Mexican state name associated with this study block.",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "fileName": {
+          "type": "string",
+          "description": "Original Excel filename uploaded by the user.",
+          "minLength": 1,
+          "maxLength": 180
+        },
+        "recordsCount": {
+          "type": "integer",
+          "description": "Number of person records imported in this Excel block."
+        },
+        "targetQuota": {
+          "type": "integer",
+          "description": "Target sample size per state block (standard: 100)."
+        },
+        "status": {
+          "type": "string",
+          "description": "Terminal status of the committed batch.",
+          "enum": ["completed"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of batch creation."
+        }
+      },
+      "required": [
+        "ownerId",
+        "batchCode",
+        "entidad",
+        "fileName",
+        "recordsCount",
+        "targetQuota",
+        "status",
+        "createdAt"
+      ]
+    },
+    "OrusSurveyRecord": {
+      "title": "OrusSurveyRecord",
+      "description": "Complete 43-item ORUS questionnaire record stored in Firestore from Excel state blocks, direct survey capture, or saved simulations.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID owning this study dataset record.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "folio": {
+          "type": "string",
+          "description": "Unique survey folio identifier.",
+          "minLength": 3,
+          "maxLength": 64
+        },
+        "origin": {
+          "type": "string",
+          "description": "Record classification between real field/Excel data and synthetic simulation.",
+          "enum": ["REAL", "SYNTHETIC"]
+        },
+        "sourceChannel": {
+          "type": "string",
+          "description": "Ingestion channel of the survey.",
+          "enum": ["EXCEL_STATE_BLOCK", "TERMINAL", "SWARM_IA"]
+        },
+        "batchId": {
+          "type": "string",
+          "description": "Parent StateBatch ID when imported via Excel, or MANUAL.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "entidad": {
+          "type": "string",
+          "description": "Mexican state (P2) for state-level study aggregation.",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "edad": {
+          "type": "string",
+          "description": "Age range (P1).",
+          "minLength": 2,
+          "maxLength": 16
+        },
+        "localidad": {
+          "type": "string",
+          "description": "Locality type (P3).",
+          "minLength": 2,
+          "maxLength": 24
+        },
+        "archetypeTag": {
+          "type": "string",
+          "description": "Profile or batch tag.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "clientRecordedAt": {
+          "type": "string",
+          "description": "ISO timestamp of survey capture or Excel import.",
+          "minLength": 10,
+          "maxLength": 40
+        },
+        "registroCampo": {
+          "type": "object",
+          "description": "Anonymized fieldwork metadata (alias, municipality/neighborhood, modality, interviewer code)."
+        },
+        "bloqueA": {
+          "type": "object",
+          "description": "Block A answers (P1-P6)."
+        },
+        "bloqueB": {
+          "type": "object",
+          "description": "Block B open narratives (P7-P10)."
+        },
+        "bloqueC": {
+          "type": "object",
+          "description": "Block C concerns and local environment (P11-P16)."
+        },
+        "bloqueD": {
+          "type": "object",
+          "description": "Block D institutional trust and public participation (P17-P25)."
+        },
+        "bloqueE": {
+          "type": "object",
+          "description": "Block E access to rights, unpaid care impact, and autonomy (P26-P33)."
+        },
+        "bloqueF": {
+          "type": "object",
+          "description": "Block F perception of Somos and other political parties (P34-P43)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp enforced by Firestore security rules."
+        }
+      },
+      "required": [
+        "ownerId",
+        "folio",
+        "origin",
+        "sourceChannel",
+        "batchId",
+        "entidad",
+        "edad",
+        "localidad",
+        "archetypeTag",
+        "clientRecordedAt",
+        "registroCampo",
+        "bloqueA",
+        "bloqueB",
+        "bloqueC",
+        "bloqueD",
+        "bloqueE",
+        "bloqueF",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/stateBatches/{batchId}": {
+      "schema": "StateBatch",
+      "description": "Stores metadata for uploaded Excel blocks per Mexican state."
+    },
+    "/surveys/{surveyId}": {
+      "schema": "OrusSurveyRecord",
+      "description": "Stores individual 43-item ORUS survey records linked to an owner and optional StateBatch."
+    }
+  }
+}

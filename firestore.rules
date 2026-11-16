@@ -1,0 +1,386 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Default-Deny Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Hardened Global Primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isBoundedString(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    // 3. Nested Block Blueprint Validators (Zero JSON.stringify, Strict Bounds)
+    function isValidRegistroCampo(reg) {
+      return reg is map
+        && reg.keys().hasAll([
+          'participanteAlias',
+          'municipioColonia',
+          'modalidad',
+          'encuestadoraClave',
+          'consentimientoAceptado',
+          'notasCampo'
+        ])
+        && reg.keys().hasOnly([
+          'participanteAlias',
+          'municipioColonia',
+          'modalidad',
+          'encuestadoraClave',
+          'consentimientoAceptado',
+          'notasCampo'
+        ])
+        && isBoundedString(reg.participanteAlias, 1, 120)
+        && isBoundedString(reg.municipioColonia, 0, 160)
+        && isBoundedString(reg.modalidad, 1, 80)
+        && isBoundedString(reg.encuestadoraClave, 0, 80)
+        && reg.consentimientoAceptado is bool
+        && isBoundedString(reg.notasCampo, 0, 500);
+    }
+
+    function isValidBloqueA(b) {
+      return b is map
+        && b.keys().hasAll([
+          'p1_edad',
+          'p2_entidad',
+          'p3_localidad',
+          'p4_actividades',
+          'p5_actividad_principal',
+          'p6_cuidados'
+        ])
+        && b.keys().hasOnly([
+          'p1_edad',
+          'p2_entidad',
+          'p3_localidad',
+          'p4_actividades',
+          'p5_actividad_principal',
+          'p6_cuidados'
+        ])
+        && isBoundedString(b.p1_edad, 2, 16)
+        && isBoundedString(b.p2_entidad, 2, 80)
+        && isBoundedString(b.p3_localidad, 2, 24)
+        && b.p4_actividades is list && b.p4_actividades.size() >= 1 && b.p4_actividades.size() <= 8 && b.p4_actividades[0] is string
+        && isBoundedString(b.p5_actividad_principal, 1, 140)
+        && b.p6_cuidados is list && b.p6_cuidados.size() >= 1 && b.p6_cuidados.size() <= 6 && b.p6_cuidados[0] is string;
+    }
+
+    function isValidBloqueB(b) {
+      return b is map
+        && b.keys().hasAll([
+          'p7_significado_mujer',
+          'p8_orgullo_fortaleza',
+          'p9_obstaculo_principal',
+          'p10_cambio_futuro_jovenes'
+        ])
+        && b.keys().hasOnly([
+          'p7_significado_mujer',
+          'p8_orgullo_fortaleza',
+          'p9_obstaculo_principal',
+          'p10_cambio_futuro_jovenes'
+        ])
+        && isBoundedString(b.p7_significado_mujer, 0, 1000)
+        && isBoundedString(b.p8_orgullo_fortaleza, 0, 1000)
+        && isBoundedString(b.p9_obstaculo_principal, 0, 1000)
+        && isBoundedString(b.p10_cambio_futuro_jovenes, 0, 1000);
+    }
+
+    function isValidBloqueC(b) {
+      return b is map
+        && b.keys().hasAll([
+          'p11_preocupaciones_top3',
+          'p12_mas_urgente',
+          'p12_justificacion',
+          'p13_problema_local_desatendido',
+          'p13_detalle',
+          'p14_espacios_conversacion',
+          'p15_preocupacion_entorno_mujeres',
+          'p16_conoce_contextos_distintos',
+          'p16_detalle'
+        ])
+        && b.keys().hasOnly([
+          'p11_preocupaciones_top3',
+          'p12_mas_urgente',
+          'p12_justificacion',
+          'p13_problema_local_desatendido',
+          'p13_detalle',
+          'p14_espacios_conversacion',
+          'p15_preocupacion_entorno_mujeres',
+          'p16_conoce_contextos_distintos',
+          'p16_detalle'
+        ])
+        && b.p11_preocupaciones_top3 is list && b.p11_preocupaciones_top3.size() >= 1 && b.p11_preocupaciones_top3.size() <= 3 && b.p11_preocupaciones_top3[0] is string
+        && isBoundedString(b.p12_mas_urgente, 1, 160)
+        && isBoundedString(b.p12_justificacion, 0, 600)
+        && isBoundedString(b.p13_problema_local_desatendido, 1, 10)
+        && isBoundedString(b.p13_detalle, 0, 600)
+        && b.p14_espacios_conversacion is list && b.p14_espacios_conversacion.size() <= 7
+        && isBoundedString(b.p15_preocupacion_entorno_mujeres, 1, 160)
+        && isBoundedString(b.p16_conoce_contextos_distintos, 1, 10)
+        && isBoundedString(b.p16_detalle, 0, 600);
+    }
+
+    function isValidBloqueD(b) {
+      return b is map
+        && b.keys().hasAll([
+          'p17_busco_atencion_institucional',
+          'p18_experiencia_institucional',
+          'p19_confianza_institucional',
+          'p20_actividades_participacion',
+          'p21_frecuencia_participacion',
+          'p22_dificultades_participacion',
+          'p23_condiciones_habilitadoras',
+          'p24_percepcion_incidencia',
+          'p25_violencia_politica',
+          'p25_detalle'
+        ])
+        && b.keys().hasOnly([
+          'p17_busco_atencion_institucional',
+          'p18_experiencia_institucional',
+          'p19_confianza_institucional',
+          'p20_actividades_participacion',
+          'p21_frecuencia_participacion',
+          'p22_dificultades_participacion',
+          'p23_condiciones_habilitadoras',
+          'p24_percepcion_incidencia',
+          'p25_violencia_politica',
+          'p25_detalle'
+        ])
+        && isBoundedString(b.p17_busco_atencion_institucional, 1, 10)
+        && (b.p18_experiencia_institucional == null || (b.p18_experiencia_institucional is map && b.p18_experiencia_institucional.size() <= 6))
+        && b.p19_confianza_institucional is map && b.p19_confianza_institucional.size() <= 8
+        && b.p20_actividades_participacion is list && b.p20_actividades_participacion.size() <= 8
+        && isBoundedString(b.p21_frecuencia_participacion, 1, 40)
+        && b.p22_dificultades_participacion is list && b.p22_dificultades_participacion.size() <= 3
+        && b.p23_condiciones_habilitadoras is list && b.p23_condiciones_habilitadoras.size() <= 3
+        && b.p24_percepcion_incidencia is map && b.p24_percepcion_incidencia.size() <= 6
+        && isBoundedString(b.p25_violencia_politica, 1, 80)
+        && isBoundedString(b.p25_detalle, 0, 600);
+    }
+
+    function isValidBloqueE(b) {
+      return b is map
+        && b.keys().hasAll([
+          'p26_acceso_derechos',
+          'p27_ambitos_desventaja',
+          'p28_situaciones_sexismo',
+          'p29_impacto_cuidados',
+          'p30_abandono_por_temor',
+          'p31_autonomia_decisiones',
+          'p32_conocimiento_rutas_apoyo',
+          'p33_apoyo_concreto_cambio'
+        ])
+        && b.keys().hasOnly([
+          'p26_acceso_derechos',
+          'p27_ambitos_desventaja',
+          'p28_situaciones_sexismo',
+          'p29_impacto_cuidados',
+          'p30_abandono_por_temor',
+          'p31_autonomia_decisiones',
+          'p32_conocimiento_rutas_apoyo',
+          'p33_apoyo_concreto_cambio'
+        ])
+        && b.p26_acceso_derechos is map && b.p26_acceso_derechos.size() <= 12
+        && b.p27_ambitos_desventaja is list && b.p27_ambitos_desventaja.size() <= 8
+        && b.p28_situaciones_sexismo is list && b.p28_situaciones_sexismo.size() <= 8
+        && b.p29_impacto_cuidados is map && b.p29_impacto_cuidados.size() <= 7
+        && isBoundedString(b.p30_abandono_por_temor, 1, 40)
+        && b.p31_autonomia_decisiones is map && b.p31_autonomia_decisiones.size() <= 7
+        && isBoundedString(b.p32_conocimiento_rutas_apoyo, 1, 80)
+        && isBoundedString(b.p33_apoyo_concreto_cambio, 0, 800);
+    }
+
+    function isValidBloqueF(b) {
+      return b is map
+        && b.keys().hasAll([
+          'p34_conoce_somos',
+          'p35_nivel_conocimiento_somos',
+          'p36_opinion_somos',
+          'p37_cercania_somos',
+          'p38_recuerda_propuesta_somos',
+          'p38_detalle',
+          'p39_positivos_somos',
+          'p39_criticas_somos',
+          'p40_otros_partidos',
+          'p41_evaluacion_otros_partidos',
+          'p42_cambio_opinion_6meses',
+          'p42_motivo',
+          'p43_escucha_social_partidos',
+          'p43_relato'
+        ])
+        && b.keys().hasOnly([
+          'p34_conoce_somos',
+          'p35_nivel_conocimiento_somos',
+          'p36_opinion_somos',
+          'p37_cercania_somos',
+          'p38_recuerda_propuesta_somos',
+          'p38_detalle',
+          'p39_positivos_somos',
+          'p39_criticas_somos',
+          'p40_otros_partidos',
+          'p41_evaluacion_otros_partidos',
+          'p42_cambio_opinion_6meses',
+          'p42_motivo',
+          'p43_escucha_social_partidos',
+          'p43_relato'
+        ])
+        && isBoundedString(b.p34_conoce_somos, 1, 30)
+        && (b.p35_nivel_conocimiento_somos == null || isBoundedString(b.p35_nivel_conocimiento_somos, 1, 60))
+        && (b.p36_opinion_somos == null || isBoundedString(b.p36_opinion_somos, 1, 60))
+        && (b.p37_cercania_somos == null || (b.p37_cercania_somos is int && b.p37_cercania_somos >= 1 && b.p37_cercania_somos <= 5))
+        && (b.p38_recuerda_propuesta_somos == null || isBoundedString(b.p38_recuerda_propuesta_somos, 1, 10))
+        && isBoundedString(b.p38_detalle, 0, 600)
+        && isBoundedString(b.p39_positivos_somos, 0, 600)
+        && isBoundedString(b.p39_criticas_somos, 0, 600)
+        && b.p40_otros_partidos is list && b.p40_otros_partidos.size() <= 3
+        && b.p41_evaluacion_otros_partidos is list && b.p41_evaluacion_otros_partidos.size() <= 3
+        && isBoundedString(b.p42_cambio_opinion_6meses, 1, 50)
+        && isBoundedString(b.p42_motivo, 0, 600)
+        && isBoundedString(b.p43_escucha_social_partidos, 1, 10)
+        && isBoundedString(b.p43_relato, 0, 600);
+    }
+
+    function isValidStateBatch(data) {
+      return data.keys().hasAll([
+          'ownerId',
+          'batchCode',
+          'entidad',
+          'fileName',
+          'recordsCount',
+          'targetQuota',
+          'status',
+          'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId',
+          'batchCode',
+          'entidad',
+          'fileName',
+          'recordsCount',
+          'targetQuota',
+          'status',
+          'createdAt'
+        ])
+        && data.ownerId == request.auth.uid
+        && isValidId(data.ownerId)
+        && isBoundedString(data.batchCode, 3, 80)
+        && isBoundedString(data.entidad, 2, 80)
+        && isBoundedString(data.fileName, 1, 180)
+        && data.recordsCount is int && data.recordsCount >= 1 && data.recordsCount <= 5000
+        && data.targetQuota is int && data.targetQuota >= 1 && data.targetQuota <= 5000
+        && data.status == 'completed'
+        && data.createdAt == request.time;
+    }
+
+    function isValidOrusSurvey(data) {
+      return data.keys().hasAll([
+          'ownerId',
+          'folio',
+          'origin',
+          'sourceChannel',
+          'batchId',
+          'entidad',
+          'edad',
+          'localidad',
+          'archetypeTag',
+          'clientRecordedAt',
+          'registroCampo',
+          'bloqueA',
+          'bloqueB',
+          'bloqueC',
+          'bloqueD',
+          'bloqueE',
+          'bloqueF',
+          'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId',
+          'folio',
+          'origin',
+          'sourceChannel',
+          'batchId',
+          'entidad',
+          'edad',
+          'localidad',
+          'archetypeTag',
+          'clientRecordedAt',
+          'registroCampo',
+          'bloqueA',
+          'bloqueB',
+          'bloqueC',
+          'bloqueD',
+          'bloqueE',
+          'bloqueF',
+          'createdAt'
+        ])
+        && data.ownerId == request.auth.uid
+        && isValidId(data.ownerId)
+        && isBoundedString(data.folio, 3, 64)
+        && (data.origin == 'REAL' || data.origin == 'SYNTHETIC')
+        && (data.sourceChannel == 'EXCEL_STATE_BLOCK' || data.sourceChannel == 'TERMINAL' || data.sourceChannel == 'SWARM_IA')
+        && isValidId(data.batchId)
+        && isBoundedString(data.entidad, 2, 80)
+        && isBoundedString(data.edad, 2, 16)
+        && isBoundedString(data.localidad, 2, 24)
+        && isBoundedString(data.archetypeTag, 1, 80)
+        && isBoundedString(data.clientRecordedAt, 10, 40)
+        && isValidRegistroCampo(data.registroCampo)
+        && isValidBloqueA(data.bloqueA)
+        && isValidBloqueB(data.bloqueB)
+        && isValidBloqueC(data.bloqueC)
+        && isValidBloqueD(data.bloqueD)
+        && isValidBloqueE(data.bloqueE)
+        && isValidBloqueF(data.bloqueF)
+        && data.createdAt == request.time;
+    }
+
+    function hasValidParentBatch(batchId) {
+      return batchId == 'MANUAL'
+        || (
+          exists(/databases/$(database)/documents/stateBatches/$(batchId))
+          && get(/databases/$(database)/documents/stateBatches/$(batchId)).data.ownerId == request.auth.uid
+        );
+    }
+
+    // 4. Collection: /stateBatches/{batchId}
+    match /stateBatches/{batchId} {
+      allow get: if isVerifiedUser() && isValidId(batchId) && existing().ownerId == request.auth.uid;
+      allow list: if isVerifiedUser() && existing().ownerId == request.auth.uid;
+      allow create: if isVerifiedUser() && isValidId(batchId) && isValidStateBatch(incoming());
+      allow update: if false;
+      allow delete: if isVerifiedUser() && isValidId(batchId) && existing().ownerId == request.auth.uid;
+    }
+
+    // 5. Collection: /surveys/{surveyId}
+    match /surveys/{surveyId} {
+      allow get: if isVerifiedUser() && isValidId(surveyId) && existing().ownerId == request.auth.uid;
+      allow list: if isVerifiedUser() && existing().ownerId == request.auth.uid;
+      allow create: if isVerifiedUser()
+        && isValidId(surveyId)
+        && isValidOrusSurvey(incoming())
+        && hasValidParentBatch(incoming().batchId);
+      allow update: if false;
+      allow delete: if isVerifiedUser() && isValidId(surveyId) && existing().ownerId == request.auth.uid;
+    }
+  }
+}

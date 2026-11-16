@@ -1,0 +1,6 @@
+{
+  "name": "OCEAN SYSTEM — Plataforma Sociopolítica ORUS",
+  "description": "Plataforma de inteligencia sociopolítica, simulación demográfica de agentes sintéticos y captura del Cuestionario ORUS: Mujeres, necesidades y participación pública (43 ítems).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
