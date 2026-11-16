@@ -1,6 +1,7 @@
 import {
   collection,
   doc,
+  getDocs,
   onSnapshot,
   query,
   serverTimestamp,
@@ -82,6 +83,18 @@ export function buildFirestoreSurveyPayload(
   const safeP12 = ensureMinStr(rec.p12_mas_urgente, 1, 160, safeP11[0]);
 
   const conoceSomos = rec.p34_conoce_somos === 'Sí';
+
+  const sanitizedRawExcel: Record<string, string> = {};
+  if (rec.datosArchivoOriginal && typeof rec.datosArchivoOriginal === 'object') {
+    for (const [k, v] of Object.entries(rec.datosArchivoOriginal)) {
+      if (Object.keys(sanitizedRawExcel).length >= 45) break;
+      const cleanKey = clampStr(k, 80, '');
+      const cleanVal = clampStr(String(v ?? ''), 300, '');
+      if (cleanKey && cleanVal) {
+        sanitizedRawExcel[cleanKey] = cleanVal;
+      }
+    }
+  }
 
   return {
     ownerId,
@@ -218,6 +231,9 @@ export function buildFirestoreSurveyPayload(
         rec.p43_escucha_social_partidos === 'Sí' ? 'Sí' : 'No',
       p43_relato: clampStr(rec.p43_relato, 600, ''),
     },
+    ...(Object.keys(sanitizedRawExcel).length > 0
+      ? { datosArchivoOriginal: sanitizedRawExcel }
+      : {}),
     createdAt: serverTimestamp(),
   };
 }
@@ -256,6 +272,9 @@ export function firestoreDocToOrusResponse(id: string, data: Record<string, any>
       consentimientoAceptado: Boolean(reg.consentimientoAceptado ?? true),
       notasCampo: reg.notasCampo || '',
     },
+    ...(data.datosArchivoOriginal && typeof data.datosArchivoOriginal === 'object'
+      ? { datosArchivoOriginal: data.datosArchivoOriginal as Record<string, string> }
+      : {}),
     p1_edad: bA.p1_edad || data.edad || '25–34',
     p2_entidad: bA.p2_entidad || data.entidad || 'Ciudad de México',
     p3_localidad: bA.p3_localidad || data.localidad || 'Urbana',
@@ -435,9 +454,9 @@ export async function saveStateExcelBatchToFirestore(params: {
     handleFirestoreError(err, OperationType.CREATE, batchPath);
   }
 
-  // 2. Guardar los N registros (ej. 100 personas) en lotes de 8 documentos por writeBatch
-  // para mantener las llamadas exists()/get() de las reglas de seguridad muy por debajo del límite de 20 por transacción.
-  const CHUNK_SIZE = 8;
+  // 2. Guardar los N registros (ej. 100 personas) en lotes de 4 documentos por writeBatch
+  // para mantener las llamadas exists()/get() de las reglas de seguridad (4 * 2 = 8) por debajo del techo de 10 por lote.
+  const CHUNK_SIZE = 4;
   let savedCount = 0;
   const total = params.records.length;
 
@@ -504,3 +523,85 @@ export async function deleteStateBatchFromFirestore(
     handleFirestoreError(err, OperationType.DELETE, `stateBatches/${batchId}`);
   }
 }
+
+export async function emptyStateDataFromFirestore(
+  stateName: string
+): Promise<{ deletedSurveys: number; deletedBatches: number }> {
+  const uid = auth.currentUser?.uid;
+  if (!uid) {
+    return { deletedSurveys: 0, deletedBatches: 0 };
+  }
+
+  let surveyIdsToDelete: string[] = [];
+  const deletedSurveyIdSet = new Set<string>();
+  const allUserSurveyBatchIds: Array<{ id: string; batchId: string }> = [];
+
+  try {
+    const surveysSnap = await getDocs(
+      query(collection(db, 'surveys'), where('ownerId', '==', uid))
+    );
+    surveysSnap.forEach((docSnap) => {
+      const data = docSnap.data();
+      const docState = data.bloqueA?.p2_entidad || data.entidad || '';
+      const batchId = typeof data.batchId === 'string' ? data.batchId : 'MANUAL';
+      allUserSurveyBatchIds.push({ id: docSnap.id, batchId });
+      if (docState === stateName) {
+        surveyIdsToDelete.push(docSnap.id);
+        deletedSurveyIdSet.add(docSnap.id);
+      }
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.LIST, 'surveys');
+  }
+
+  let batchIdsToDelete: string[] = [];
+  try {
+    const batchesSnap = await getDocs(
+      query(collection(db, 'stateBatches'), where('ownerId', '==', uid))
+    );
+    batchesSnap.forEach((docSnap) => {
+      const data = docSnap.data();
+      const remainingLinked = allUserSurveyBatchIds.filter(
+        (s) => s.batchId === docSnap.id && !deletedSurveyIdSet.has(s.id)
+      ).length;
+      if (data.entidad === stateName || remainingLinked === 0) {
+        batchIdsToDelete.push(docSnap.id);
+      }
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.LIST, 'stateBatches');
+  }
+
+  const CHUNK = 200;
+  for (let i = 0; i < surveyIdsToDelete.length; i += CHUNK) {
+    const slice = surveyIdsToDelete.slice(i, i + CHUNK);
+    const wb = writeBatch(db);
+    for (const sId of slice) {
+      wb.delete(doc(db, 'surveys', sId));
+    }
+    try {
+      await wb.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, 'surveys');
+    }
+  }
+
+  for (let i = 0; i < batchIdsToDelete.length; i += CHUNK) {
+    const slice = batchIdsToDelete.slice(i, i + CHUNK);
+    const wb = writeBatch(db);
+    for (const bId of slice) {
+      wb.delete(doc(db, 'stateBatches', bId));
+    }
+    try {
+      await wb.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, 'stateBatches');
+    }
+  }
+
+  return {
+    deletedSurveys: surveyIdsToDelete.length,
+    deletedBatches: batchIdsToDelete.length,
+  };
+}
+

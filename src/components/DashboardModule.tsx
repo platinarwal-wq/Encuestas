@@ -9,12 +9,16 @@ import {
 } from '../engine/analyticsEngine';
 import { ActiveModule, AgeRange, LocalityType, OrusResponse } from '../types/orus';
 import { StateRespondentsBreakdown } from './StateRespondentsBreakdown';
-import { RotateCcw, ArrowUpRight, Filter } from 'lucide-react';
+import { RotateCcw, ArrowUpRight, Filter, Trash2 } from 'lucide-react';
 
 interface DashboardModuleProps {
   records: OrusResponse[];
   onNavigateModule: (mod: ActiveModule) => void;
   onInspectEntityInExplorer: (entityName: string) => void;
+  onUploadStateExcelToFirebase?: (stateName: string, file: File) => void | Promise<void>;
+  uploadingStateName?: string | null;
+  onEmptyStateData?: (stateName: string) => void | Promise<void>;
+  emptyingStateName?: string | null;
 }
 
 type MapMetricMode = 'SOMOS' | 'CARE' | 'DISAFFECTION';
@@ -23,12 +27,17 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
   records,
   onNavigateModule,
   onInspectEntityInExplorer,
+  onUploadStateExcelToFirebase,
+  uploadingStateName,
+  onEmptyStateData,
+  emptyingStateName,
 }) => {
   const [selectedAge, setSelectedAge] = useState<'ALL' | AgeRange>('ALL');
   const [selectedLocality, setSelectedLocality] = useState<'ALL' | LocalityType>('ALL');
   const [selectedEntity, setSelectedEntity] = useState<string | null>(null);
   const [mapMetric, setMapMetric] = useState<MapMetricMode>('SOMOS');
   const [geoViewMode, setGeoViewMode] = useState<'CARTOGRAM' | 'MATRIX'>('CARTOGRAM');
+  const [confirmSideEmpty, setConfirmSideEmpty] = useState<boolean>(false);
 
   // Filtrado demográfico global en el módulo
   const demoFilteredRecords = useMemo(() => {
@@ -518,7 +527,7 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
                     </p>
                   </div>
 
-                  <div className="flex items-center gap-2 pt-2">
+                  <div className="flex flex-wrap items-center gap-2 pt-2">
                     <button
                       type="button"
                       onClick={() => onInspectEntityInExplorer(selectedStateRow.meta.name)}
@@ -526,9 +535,47 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
                     >
                       Auditar folios del estado
                     </button>
+                    {onEmptyStateData && selectedStateRow.count > 0 && (
+                      confirmSideEmpty ? (
+                        <div className="inline-flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            disabled={emptyingStateName === selectedStateRow.meta.name}
+                            onClick={async () => {
+                              await onEmptyStateData(selectedStateRow.meta.name);
+                              setConfirmSideEmpty(false);
+                            }}
+                            className="px-3 py-2 rounded-lg text-xs font-semibold bg-rose-600 hover:bg-rose-500 text-white cursor-pointer whitespace-nowrap shrink-0"
+                          >
+                            {emptyingStateName === selectedStateRow.meta.name
+                              ? 'Borrando...'
+                              : 'Confirmar Empty'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmSideEmpty(false)}
+                            className="px-2.5 py-2 rounded-lg text-xs text-slate-300 bg-slate-800 cursor-pointer whitespace-nowrap shrink-0"
+                          >
+                            Cancelar
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmSideEmpty(true)}
+                          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/35 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Empty
+                        </button>
+                      )
+                    )}
                     <button
                       type="button"
-                      onClick={() => setSelectedEntity(null)}
+                      onClick={() => {
+                        setConfirmSideEmpty(false);
+                        setSelectedEntity(null);
+                      }}
                       className="px-3 py-2 rounded-lg text-xs font-medium text-slate-300 hover:text-white bg-slate-800/80 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
                     >
                       Ver total nacional
@@ -644,6 +691,10 @@ export const DashboardModule: React.FC<DashboardModuleProps> = ({
               stateShortCode={selectedStateRow.meta.short}
               records={demoFilteredRecords}
               onClose={() => setSelectedEntity(null)}
+              onUploadExcelFileForState={onUploadStateExcelToFirebase}
+              isUploadingForState={uploadingStateName === selectedStateRow.meta.name}
+              onEmptyStateData={onEmptyStateData}
+              isEmptyingState={emptyingStateName === selectedStateRow.meta.name}
             />
           </div>
         )}

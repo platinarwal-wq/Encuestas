@@ -153,6 +153,10 @@
           "type": "object",
           "description": "Block F perception of Somos and other political parties (P34-P43)."
         },
+        "datosArchivoOriginal": {
+          "type": "object",
+          "description": "Optional native Firestore map preserving the raw column key-values uploaded from the state Excel/CSV file."
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",

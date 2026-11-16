@@ -533,31 +533,31 @@ export async function parseUploadedStateExcelFile(
       return '';
     };
 
-    // Verificar si es una fila de plantilla dejada en blanco
-    const keySignals = [
-      pickCol(
-        'PARTICIPANTE_ALIAS',
-        'NombreCompleto',
-        'Participante',
-        'Nombre',
-        'Nombres',
-        'Alias',
-        'Encuestada',
-        'Encuestado',
-        'Persona'
-      ),
-      pickCol('P1_EDAD', 'Edad', 'RangoEdad', 'P1'),
-      pickCol('P3_LOCALIDAD', 'Localidad', 'Zona', 'TipoLocalidad', 'P3'),
-      pickCol('P4_ACTIVIDADES', 'Actividades', 'Ocupacion', 'P4'),
-      pickCol('P11_PREOCUPACIONES_TOP3', 'Preocupaciones', 'Problematica', 'P11'),
-      pickCol('P12_MAS_URGENTE', 'Urgencia', 'ProblemaUrgente', 'P12'),
-      pickCol('P7_SIGNIFICADO_MUJER', 'SignificadoMujer', 'P7'),
-      pickCol('P34_CONOCE_SOMOS', 'ConoceSomos', 'Somos', 'P34'),
-    ];
-    const hasAnyUserContent = keySignals.some((v) => String(v).trim() !== '');
+    // Verificar si es una fila de plantilla dejada en blanco o si contiene cualquier columna con datos
+    const BOILERPLATE_KEYS = new Set([
+      'fila',
+      'folio',
+      'modalidad',
+      'claveencuestadora',
+      'p2entidad',
+    ]);
+    const hasAnyUserContent = Object.entries(normRow).some(
+      ([nk, val]) => !BOILERPLATE_KEYS.has(nk) && String(val ?? '').trim() !== ''
+    );
     if (!hasAnyUserContent) {
       skippedBlankRows++;
       return;
+    }
+
+    // Preservar hasta 45 columnas originales con contenido para almacenarlas de forma nativa en Firebase
+    const datosArchivoOriginal: Record<string, string> = {};
+    for (const [rawColKey, rawColVal] of Object.entries(rawRow)) {
+      if (Object.keys(datosArchivoOriginal).length >= 45) break;
+      const cleanKey = String(rawColKey ?? '').trim().slice(0, 80);
+      const cleanVal = String(rawColVal ?? '').trim().slice(0, 300);
+      if (cleanKey && cleanVal) {
+        datosArchivoOriginal[cleanKey] = cleanVal;
+      }
     }
 
     const rowNumber = parsedRecords.length + 1;
@@ -768,6 +768,7 @@ export async function parseUploadedStateExcelFile(
       sourceChannel: 'EXCEL_STATE_BLOCK',
       createdAt: new Date().toISOString(),
       archetypeTag: 'BLOQUE_EXCEL_ESTATAL',
+      ...(Object.keys(datosArchivoOriginal).length > 0 ? { datosArchivoOriginal } : {}),
       registroCampo: {
         participanteAlias: (() => {
           const directFull = String(

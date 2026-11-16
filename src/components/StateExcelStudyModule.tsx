@@ -36,11 +36,16 @@ interface StateExcelStudyModuleProps {
   dbRecords: OrusResponse[];
   allRecords: OrusResponse[];
   stateBatches: StateBatchRecord[];
+  pendingLocalExcelCount: number;
+  isSyncingPending: boolean;
+  onSyncPendingToFirebase: () => Promise<void>;
   onSignInGoogle: () => Promise<boolean>;
   onLocalFallbackInject: (records: OrusResponse[]) => void;
   onInspectEntityInExplorer: (entityName: string) => void;
   onNavigateModule: (mod: ActiveModule) => void;
   onNotify: (msg: string) => void;
+  onEmptyState: (stateName: string) => Promise<void>;
+  emptyingStateName: string | null;
 }
 
 export const StateExcelStudyModule: React.FC<StateExcelStudyModuleProps> = ({
@@ -49,10 +54,15 @@ export const StateExcelStudyModule: React.FC<StateExcelStudyModuleProps> = ({
   dbRecords,
   allRecords,
   stateBatches,
+  pendingLocalExcelCount,
+  isSyncingPending,
+  onSyncPendingToFirebase,
   onSignInGoogle,
   onLocalFallbackInject,
   onInspectEntityInExplorer,
   onNotify,
+  onEmptyState,
+  emptyingStateName,
 }) => {
   const states32 = useMemo(
     () => MEXICO_ENTITIES.filter((e) => e.code !== 'EXT'),
@@ -63,18 +73,23 @@ export const StateExcelStudyModule: React.FC<StateExcelStudyModuleProps> = ({
   const [expandedStateName, setExpandedStateName] = useState<string | null>('Guanajuato');
   const [regionFilter, setRegionFilter] = useState<string>('ALL');
   const [lockRowsToSelectedState, setLockRowsToSelectedState] = useState<boolean>(true);
+  const [autoSaveToFirebase, setAutoSaveToFirebase] = useState<boolean>(true);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [parsedPreview, setParsedPreview] = useState<ParsedExcelBatchResult | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [isParsing, setIsParsing] = useState<boolean>(false);
   const [isSavingDb, setIsSavingDb] = useState<boolean>(false);
+  const [savingTargetState, setSavingTargetState] = useState<string | null>(null);
   const [saveProgress, setSaveProgress] = useState<{ saved: number; total: number } | null>(
     null
   );
   const [confirmDeleteBatchId, setConfirmDeleteBatchId] = useState<string | null>(null);
   const [deletingBatchId, setDeletingBatchId] = useState<string | null>(null);
+  const [confirmEmptyStateName, setConfirmEmptyStateName] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const directStateInputRef = useRef<HTMLInputElement | null>(null);
+  const directTargetStateRef = useRef<string>('Guanajuato');
   const stateMatrixRef = useRef<HTMLElement | null>(null);
   const uploadSectionRef = useRef<HTMLElement | null>(null);
 
@@ -93,26 +108,32 @@ export const StateExcelStudyModule: React.FC<StateExcelStudyModuleProps> = ({
 
   const stateProgressList = useMemo(() => {
     const realCountsByState: Record<string, number> = {};
+    const firebaseCountsByState: Record<string, number> = {};
     const totalCountsByState: Record<string, number> = {};
     for (const r of studySourceRecords) {
       realCountsByState[r.p2_entidad] = (realCountsByState[r.p2_entidad] || 0) + 1;
+    }
+    for (const r of dbRecords) {
+      firebaseCountsByState[r.p2_entidad] = (firebaseCountsByState[r.p2_entidad] || 0) + 1;
     }
     for (const r of allRecords) {
       totalCountsByState[r.p2_entidad] = (totalCountsByState[r.p2_entidad] || 0) + 1;
     }
     return states32.map((st) => {
       const count = realCountsByState[st.name] || 0;
+      const firebaseCount = firebaseCountsByState[st.name] || 0;
       const totalInView = totalCountsByState[st.name] || 0;
       const pct = Math.min(100, Math.round((count / 100) * 100));
       return {
         ...st,
         count,
+        firebaseCount,
         totalInView,
         pct,
         isComplete: count >= 100,
       };
     });
-  }, [states32, studySourceRecords, allRecords]);
+  }, [states32, studySourceRecords, dbRecords, allRecords]);
 
   const filteredStateProgress = useMemo(() => {
     if (regionFilter === 'ALL') return stateProgressList;
@@ -128,7 +149,54 @@ export const StateExcelStudyModule: React.FC<StateExcelStudyModuleProps> = ({
   const nationalTarget = 3200; // 32 estados * 100 personas
   const nationalPct = Math.min(100, Math.round((totalStudyCaptured / nationalTarget) * 100));
 
-  const processExcelFile = async (file: File, targetStateName: string, lockState: boolean) => {
+  const commitBatchToFirebase = async (
+    batchRes: ParsedExcelBatchResult,
+    fileName: string,
+    effectiveStateName: string
+  ) => {
+    setIsSavingDb(true);
+    setSavingTargetState(effectiveStateName);
+    setSaveProgress({ saved: 0, total: batchRes.records.length });
+
+    try {
+      const meta =
+        states32.find((s) => s.name === effectiveStateName) || selectedEntityMeta;
+
+      const result = await saveStateExcelBatchToFirestore({
+        entidad: meta.name,
+        stateShortCode: meta.short,
+        fileName: fileName || `Bloque_${meta.short}.xlsx`,
+        records: batchRes.records,
+        targetQuota: 100,
+        onProgress: (saved, total) => setSaveProgress({ saved, total }),
+      });
+
+      onNotify(
+        `Archivo "${fileName}" almacenado en Firebase Firestore para ${meta.name}: ${result.savedCount} personas (${result.batchCode}).`
+      );
+      setSelectedState(meta.name);
+      setExpandedStateName(meta.name);
+      setParsedPreview(null);
+      setSelectedFile(null);
+      setSaveProgress(null);
+    } catch (err) {
+      setParseError(
+        err instanceof Error
+          ? `Error al guardar en Firebase Firestore: ${err.message}`
+          : 'No se pudo completar el guardado en Firebase Firestore.'
+      );
+    } finally {
+      setIsSavingDb(false);
+      setSavingTargetState(null);
+    }
+  };
+
+  const processExcelFile = async (
+    file: File,
+    targetStateName: string,
+    lockState: boolean,
+    shouldAutoPersist = autoSaveToFirebase
+  ) => {
     setSelectedFile(file);
     setParseError(null);
     setIsParsing(true);
@@ -137,9 +205,20 @@ export const StateExcelStudyModule: React.FC<StateExcelStudyModuleProps> = ({
         targetState: targetStateName,
         lockAllRowsToTargetState: lockState,
       });
+      const resolvedState = lockState ? targetStateName : res.detectedState || targetStateName;
+      setSelectedState(resolvedState);
+      setExpandedStateName(resolvedState);
       setParsedPreview(res);
-      if (!lockState && res.detectedState) {
-        setSelectedState(res.detectedState);
+
+      // Si la sesión de Firebase está activa y el guardado automático está habilitado, almacenar de inmediato en Firestore
+      if (userEmail && shouldAutoPersist && res.records.length > 0) {
+        setIsParsing(false);
+        await commitBatchToFirebase(res, file.name, resolvedState);
+        return;
+      }
+
+      if (!userEmail) {
+        uploadSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
     } catch (err) {
       setParsedPreview(null);
@@ -156,15 +235,21 @@ export const StateExcelStudyModule: React.FC<StateExcelStudyModuleProps> = ({
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
     if (!f) return;
-    await processExcelFile(f, selectedState, lockRowsToSelectedState);
+    await processExcelFile(f, selectedState, lockRowsToSelectedState, autoSaveToFirebase);
     e.target.value = '';
+  };
+
+  const handleDirectStateFileUpload = async (stateName: string, file: File) => {
+    setSelectedState(stateName);
+    setLockRowsToSelectedState(true);
+    await processExcelFile(file, stateName, true, true);
   };
 
   const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     const f = e.dataTransfer.files?.[0];
     if (!f) return;
-    await processExcelFile(f, selectedState, lockRowsToSelectedState);
+    await processExcelFile(f, selectedState, lockRowsToSelectedState, autoSaveToFirebase);
   };
 
   const handleSaveBatchToDatabase = async () => {
@@ -175,48 +260,21 @@ export const StateExcelStudyModule: React.FC<StateExcelStudyModuleProps> = ({
       const signedIn = await onSignInGoogle();
       if (!signedIn) {
         setParseError(
-          'Inicia sesión con Google para almacenar de forma permanente en la base de datos en la nube, o usa "Integrar solo en memoria local".'
+          'Inicia sesión con tu cuenta Google para almacenar de forma permanente el archivo en Firebase Firestore.'
         );
         return;
       }
     }
 
-    setIsSavingDb(true);
-    setSaveProgress({ saved: 0, total: parsedPreview.records.length });
+    const effectiveState = lockRowsToSelectedState
+      ? selectedState
+      : parsedPreview.detectedState || selectedState;
 
-    try {
-      const effectiveState = lockRowsToSelectedState
-        ? selectedState
-        : parsedPreview.detectedState || selectedState;
-      const meta =
-        states32.find((s) => s.name === effectiveState) || selectedEntityMeta;
-
-      const result = await saveStateExcelBatchToFirestore({
-        entidad: meta.name,
-        stateShortCode: meta.short,
-        fileName: selectedFile?.name || `Bloque_${meta.short}.xlsx`,
-        records: parsedPreview.records,
-        targetQuota: 100,
-        onProgress: (saved, total) => setSaveProgress({ saved, total }),
-      });
-
-      onNotify(
-        `Bloque ${result.batchCode} (${meta.name}: ${result.savedCount} personas) almacenado en la Base de Datos.`
-      );
-      setSelectedState(meta.name);
-      setExpandedStateName(meta.name);
-      setParsedPreview(null);
-      setSelectedFile(null);
-      setSaveProgress(null);
-    } catch (err) {
-      setParseError(
-        err instanceof Error
-          ? `Error al guardar en base de datos: ${err.message}`
-          : 'No se pudo completar el guardado en la base de datos.'
-      );
-    } finally {
-      setIsSavingDb(false);
-    }
+    await commitBatchToFirebase(
+      parsedPreview,
+      selectedFile?.name || `Bloque_${effectiveState}.xlsx`,
+      effectiveState
+    );
   };
 
   const handleDeleteBatch = async (batch: StateBatchRecord) => {
@@ -237,6 +295,18 @@ export const StateExcelStudyModule: React.FC<StateExcelStudyModuleProps> = ({
     }
   };
 
+  const executeEmptyForState = async (stateName: string) => {
+    setParseError(null);
+    await onEmptyState(stateName);
+    setConfirmEmptyStateName(null);
+    setSelectedState(stateName);
+    setExpandedStateName(stateName);
+    if (parsedPreview && parsedPreview.detectedState === stateName) {
+      setParsedPreview(null);
+      setSelectedFile(null);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Cabecera Estratégica del Estudio Estatal por Bloques de 100 Personas */}
@@ -248,17 +318,17 @@ export const StateExcelStudyModule: React.FC<StateExcelStudyModuleProps> = ({
               <span aria-hidden="true">·</span>
               <span className={userEmail ? 'text-[#00FF9D]' : 'text-amber-300'}>
                 {userEmail
-                  ? `BASE DE DATOS CONECTADA (${userEmail})`
-                  : 'CONECTA TU SESIÓN PARA GUARDADO PERMANENTE EN NUBE'}
+                  ? `FIREBASE FIRESTORE ACTIVO (${userEmail})`
+                  : 'CONECTA TU CUENTA GOOGLE PARA ALMACENAR ARCHIVOS EN FIREBASE'}
               </span>
             </div>
             <h1 className="mt-1 text-2xl font-semibold text-slate-50">
-              Carga de Bloques Excel por Estado (100 Personas por Entidad)
+              Carga de Bloques Excel por Estado en Firebase (100 Personas por Entidad)
             </h1>
             <p className="text-sm text-slate-400 mt-1 max-w-3xl">
-              Arma el estudio nacional estado por estado ingresando archivos Excel (<code>.xlsx</code>,{' '}
-              <code>.xls</code> o <code>.csv</code>) con bloques de 100 encuestadas por entidad y almacénalos
-              directamente en la base de datos.
+              Ingresa archivos Excel o CSV (<code>.xlsx</code>, <code>.xls</code>, <code>.csv</code>) en
+              cualquiera de los 32 estados: la información se valida y se almacena directamente en la base de
+              datos de Firebase Firestore.
             </p>
           </div>
 
@@ -269,10 +339,30 @@ export const StateExcelStudyModule: React.FC<StateExcelStudyModuleProps> = ({
               className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold bg-[#00F0FF] text-slate-950 hover:bg-[#38F5FF] transition-colors cursor-pointer whitespace-nowrap shrink-0"
             >
               <LogIn className="w-4 h-4" />
-              Conectar Base de Datos (Google)
+              Conectar Firebase (Google)
             </button>
           )}
         </div>
+
+        {pendingLocalExcelCount > 0 && (
+          <div className="p-4 rounded-xl bg-amber-950/35 border border-amber-500/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="text-xs text-amber-100">
+              <strong>{pendingLocalExcelCount} registros estatales</strong> fueron cargados previamente en memoria
+              local y aún no están respaldados en Firebase Firestore.
+            </div>
+            <button
+              type="button"
+              disabled={isSyncingPending}
+              onClick={() => void onSyncPendingToFirebase()}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold bg-[#00FF9D] text-slate-950 hover:bg-[#34FFB2] cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50"
+            >
+              <CloudUpload className="w-4 h-4" />
+              {isSyncingPending
+                ? 'Sincronizando a Firebase...'
+                : `Guardar ${pendingLocalExcelCount} pendientes en Firebase`}
+            </button>
+          </div>
+        )}
 
         {/* KPIs de Cobertura del Estudio Estatal */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -380,24 +470,62 @@ export const StateExcelStudyModule: React.FC<StateExcelStudyModuleProps> = ({
                 })}
               </select>
 
-              <button
-                type="button"
-                onClick={() => {
-                  setExpandedStateName(selectedEntityMeta.name);
-                  if (regionFilter !== 'ALL' && selectedEntityMeta.region !== regionFilter) {
-                    setRegionFilter('ALL');
-                  }
-                  stateMatrixRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                }}
-                className="w-full inline-flex items-center justify-between px-3 py-2 rounded-lg bg-[#00F0FF]/10 hover:bg-[#00F0FF]/18 border border-[#00F0FF]/35 text-xs font-medium text-[#00F0FF] transition-colors cursor-pointer"
-              >
-                <span className="inline-flex items-center gap-2">
-                  <Users className="w-3.5 h-3.5" />
-                  Desglosar encuestados de {selectedEntityMeta.name} (
-                  {stateProgressList.find((s) => s.code === selectedEntityMeta.code)?.totalInView ?? 0} personas)
-                </span>
-                <ChevronDown className="w-3.5 h-3.5" />
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExpandedStateName(selectedEntityMeta.name);
+                    if (regionFilter !== 'ALL' && selectedEntityMeta.region !== regionFilter) {
+                      setRegionFilter('ALL');
+                    }
+                    stateMatrixRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }}
+                  className="flex-1 inline-flex items-center justify-between px-3 py-2 rounded-lg bg-[#00F0FF]/10 hover:bg-[#00F0FF]/18 border border-[#00F0FF]/35 text-xs font-medium text-[#00F0FF] transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <Users className="w-3.5 h-3.5" />
+                    Desglosar {selectedEntityMeta.short} (
+                    {stateProgressList.find((s) => s.code === selectedEntityMeta.code)?.totalInView ?? 0})
+                  </span>
+                  <ChevronDown className="w-3.5 h-3.5" />
+                </button>
+
+                {(stateProgressList.find((s) => s.code === selectedEntityMeta.code)?.totalInView ?? 0) >
+                  0 && (
+                  confirmEmptyStateName === `step1_${selectedEntityMeta.name}` ? (
+                    <div className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-rose-950/70 border border-rose-500/45">
+                      <button
+                        type="button"
+                        disabled={emptyingStateName === selectedEntityMeta.name}
+                        onClick={() => void executeEmptyForState(selectedEntityMeta.name)}
+                        className="px-2 py-0.5 rounded text-xs font-semibold bg-rose-600 hover:bg-rose-500 text-white cursor-pointer whitespace-nowrap"
+                      >
+                        {emptyingStateName === selectedEntityMeta.name
+                          ? 'Borrando...'
+                          : 'Confirmar Empty'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmEmptyStateName(null)}
+                        className="px-2 py-0.5 rounded text-xs text-slate-300 bg-slate-800 cursor-pointer whitespace-nowrap"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={Boolean(emptyingStateName) || isSavingDb}
+                      onClick={() => setConfirmEmptyStateName(`step1_${selectedEntityMeta.name}`)}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/35 text-xs font-semibold text-rose-300 transition-colors cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50"
+                      title={`Borrar toda la información de ${selectedEntityMeta.name} para subirla nuevamente`}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      Empty
+                    </button>
+                  )
+                )}
+              </div>
             </div>
 
             <label className="flex items-start gap-2.5 p-3 rounded-lg bg-[#05070A]/80 border border-slate-800 cursor-pointer">
@@ -450,13 +578,25 @@ export const StateExcelStudyModule: React.FC<StateExcelStudyModuleProps> = ({
           ref={uploadSectionRef}
           className="lg:col-span-7 ocean-surface rounded-xl p-5 sm:p-6 space-y-5"
         >
-          <div>
-            <div className="text-xs font-mono text-[#00FF9D]">
-              PASO 2 · INGRESAR ARCHIVO EXCEL Y GUARDAR EN BASE DE DATOS
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <div className="text-xs font-mono text-[#00FF9D]">
+                PASO 2 · INGRESAR ARCHIVO EXCEL Y ALMACENAR EN FIREBASE
+              </div>
+              <h2 className="text-lg font-semibold text-slate-100 mt-1">
+                Importador Estatal Directo a Firebase (.xlsx / .xls / .csv)
+              </h2>
             </div>
-            <h2 className="text-lg font-semibold text-slate-100 mt-1">
-              Importador de Bloque Estatal (.xlsx / .xls / .csv)
-            </h2>
+
+            <label className="inline-flex items-center gap-2 text-xs text-slate-300 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={autoSaveToFirebase}
+                onChange={(e) => setAutoSaveToFirebase(e.target.checked)}
+                className="accent-[#00FF9D]"
+              />
+              <span>Auto-guardar en Firebase al subir</span>
+            </label>
           </div>
 
           <div
@@ -487,9 +627,30 @@ export const StateExcelStudyModule: React.FC<StateExcelStudyModuleProps> = ({
             </p>
           </div>
 
-          {isParsing && (
-            <div className="p-4 rounded-lg bg-slate-900/90 border border-slate-800 text-xs font-mono text-[#00F0FF]">
-              Validando estructura de celdas y reglas OCEAN-43 del archivo Excel...
+          {(isParsing || (isSavingDb && !parsedPreview)) && (
+            <div className="p-4 rounded-xl bg-[#05070A]/95 border border-[#00F0FF]/45 space-y-2">
+              <div className="flex items-center justify-between text-xs font-mono text-[#00F0FF]">
+                <span>
+                  {isSavingDb
+                    ? `Almacenando archivo en Firebase Firestore (${savingTargetState || selectedEntityMeta.name})...`
+                    : 'Validando estructura de celdas y reglas OCEAN-43 del archivo Excel...'}
+                </span>
+                {saveProgress && (
+                  <span className="tabular-nums text-[#00FF9D] font-bold">
+                    {saveProgress.saved} / {saveProgress.total}
+                  </span>
+                )}
+              </div>
+              {saveProgress && (
+                <div className="w-full h-2 bg-slate-900 rounded overflow-hidden">
+                  <div
+                    className="h-full bg-[#00FF9D] transition-all"
+                    style={{
+                      width: `${Math.round((saveProgress.saved / saveProgress.total) * 100)}%`,
+                    }}
+                  />
+                </div>
+              )}
             </div>
           )}
 
@@ -600,26 +761,26 @@ export const StateExcelStudyModule: React.FC<StateExcelStudyModuleProps> = ({
                 <button
                   type="button"
                   disabled={isSavingDb}
-                  onClick={() => {
-                    onLocalFallbackInject(parsedPreview.records);
-                    setParsedPreview(null);
-                    setSelectedFile(null);
-                  }}
-                  className="px-3.5 py-2 rounded-lg text-xs font-medium text-slate-300 bg-slate-900 hover:bg-slate-800 border border-slate-700 cursor-pointer disabled:opacity-50"
-                >
-                  Integrar solo en memoria local
-                </button>
-
-                <button
-                  type="button"
-                  disabled={isSavingDb}
                   onClick={() => void handleSaveBatchToDatabase()}
                   className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold bg-[#00FF9D] text-slate-950 hover:bg-[#34FFB2] transition-colors cursor-pointer disabled:opacity-50"
                 >
                   <CloudUpload className="w-4 h-4" />
                   {userEmail
-                    ? `Almacenar ${parsedPreview.records.length} Personas en Base de Datos`
-                    : `Conectar Google y Guardar ${parsedPreview.records.length} Personas en BD`}
+                    ? `Almacenar ${parsedPreview.records.length} Personas en Firebase Firestore`
+                    : `Conectar Google y Guardar ${parsedPreview.records.length} Personas en Firebase`}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isSavingDb}
+                  onClick={() => {
+                    onLocalFallbackInject(parsedPreview.records);
+                    setParsedPreview(null);
+                    setSelectedFile(null);
+                  }}
+                  className="px-3 py-1.5 rounded-lg text-[11px] font-medium text-slate-400 hover:text-slate-200 bg-slate-900/70 hover:bg-slate-800 border border-slate-800 cursor-pointer disabled:opacity-50"
+                >
+                  Vista previa sin BD
                 </button>
               </div>
             </div>
@@ -662,6 +823,21 @@ export const StateExcelStudyModule: React.FC<StateExcelStudyModuleProps> = ({
           </div>
         </div>
 
+        {/* Input oculto para subir archivo directamente desde cualquier tarjeta estatal */}
+        <input
+          ref={directStateInputRef}
+          type="file"
+          accept=".xlsx,.xls,.csv"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) {
+              void handleDirectStateFileUpload(directTargetStateRef.current, f);
+            }
+            e.target.value = '';
+          }}
+          className="hidden"
+        />
+
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 grid-flow-row-dense gap-3">
           {filteredStateProgress.map((st) => {
             const isSelected = st.name === selectedState;
@@ -699,7 +875,7 @@ export const StateExcelStudyModule: React.FC<StateExcelStudyModuleProps> = ({
                     </span>
                   </div>
 
-                  <div className="mt-2.5 w-full h-1.5 bg-slate-900 rounded overflow-hidden">
+                  <div className="mt-2 w-full h-1.5 bg-slate-900 rounded overflow-hidden">
                     <div
                       className={`h-full transition-all ${
                         st.isComplete ? 'bg-[#00FF9D]' : 'bg-[#00F0FF]'
@@ -708,10 +884,66 @@ export const StateExcelStudyModule: React.FC<StateExcelStudyModuleProps> = ({
                     />
                   </div>
 
-                  <div className="mt-2.5 flex items-center justify-between text-[11px] font-mono">
-                    <span className="text-slate-400">{st.region}</span>
+                  <div className="mt-2.5 flex items-center justify-between gap-1.5 text-[11px] font-mono">
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        disabled={isSavingDb || emptyingStateName === st.name}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          directTargetStateRef.current = st.name;
+                          setSelectedState(st.name);
+                          directStateInputRef.current?.click();
+                        }}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded bg-[#00FF9D]/15 hover:bg-[#00FF9D]/25 text-[#00FF9D] border border-[#00FF9D]/30 font-semibold cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50"
+                        title={`Subir archivo Excel de ${st.name} a Firebase`}
+                      >
+                        <CloudUpload className="w-3 h-3" />
+                        {st.firebaseCount > 0 ? `Firebase (${st.firebaseCount})` : 'Subir'}
+                      </button>
+
+                      {(st.totalInView > 0 || st.firebaseCount > 0) && (
+                        confirmEmptyStateName === st.name ? (
+                          <div
+                            onClick={(e) => e.stopPropagation()}
+                            className="inline-flex items-center gap-1"
+                          >
+                            <button
+                              type="button"
+                              disabled={emptyingStateName === st.name}
+                              onClick={() => void executeEmptyForState(st.name)}
+                              className="px-1.5 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white font-semibold cursor-pointer whitespace-nowrap"
+                            >
+                              {emptyingStateName === st.name ? '...' : 'Confirmar'}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmEmptyStateName(null)}
+                              className="px-1.5 py-1 rounded bg-slate-800 text-slate-300 cursor-pointer"
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={Boolean(emptyingStateName) || isSavingDb}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setConfirmEmptyStateName(st.name);
+                            }}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/35 font-semibold cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50"
+                            title={`Borrar información de ${st.name} para subirla nuevamente`}
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            Empty
+                          </button>
+                        )
+                      )}
+                    </div>
+
                     <span
-                      className={`inline-flex items-center gap-1 ${
+                      className={`inline-flex items-center gap-1 whitespace-nowrap ${
                         isExpanded ? 'text-[#00FF9D] font-semibold' : 'text-[#00F0FF]'
                       }`}
                     >
@@ -722,7 +954,7 @@ export const StateExcelStudyModule: React.FC<StateExcelStudyModuleProps> = ({
                         </>
                       ) : (
                         <>
-                          Encuestados ({st.totalInView})
+                          Ver ({st.totalInView})
                           <ChevronDown className="w-3.5 h-3.5" />
                         </>
                       )}
@@ -740,13 +972,16 @@ export const StateExcelStudyModule: React.FC<StateExcelStudyModuleProps> = ({
                       onDownloadSampleForState={(name) =>
                         downloadSample100StateWorkbookXlsx(name, 100)
                       }
+                      onUploadExcelFileForState={(name, file) =>
+                        handleDirectStateFileUpload(name, file)
+                      }
+                      isUploadingForState={isSavingDb && savingTargetState === st.name}
+                      onEmptyStateData={(name) => executeEmptyForState(name)}
+                      isEmptyingState={emptyingStateName === st.name}
                       onTriggerUploadForState={(name) => {
+                        directTargetStateRef.current = name;
                         setSelectedState(name);
-                        uploadSectionRef.current?.scrollIntoView({
-                          behavior: 'smooth',
-                          block: 'center',
-                        });
-                        window.setTimeout(() => fileInputRef.current?.click(), 250);
+                        directStateInputRef.current?.click();
                       }}
                     />
                   </div>

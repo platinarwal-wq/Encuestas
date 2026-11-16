@@ -33,4 +33,4 @@
 - **Collection `/surveys/{surveyId}`**:
   - *Identity Spoofing*: PASS (`incoming().ownerId == request.auth.uid`).
   - *Orphaned Write*: PASS (`batchId == 'MANUAL'` or verified existing `/stateBatches/$(incoming().batchId)` owned by caller).
-  - *Resource/Value Poisoning*: PASS (`isValidOrusSurvey(incoming())` validates all nested block maps, string bounds, and array `.size()` limits).
+  - *Resource/Value Poisoning*: PASS (`isValidOrusSurvey(incoming())` validates all nested block maps, optional `datosArchivoOriginal` native map bounded to `size() <= 50`, string bounds, and array `.size()` limits).

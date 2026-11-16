@@ -1,14 +1,17 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { exportRecordsToExcelXlsx } from '../engine/excelStateProcessor';
 import { OrusResponse, RecordOrigin } from '../types/orus';
 import { getRespondentDisplayProfile } from '../utils/respondentProfileHelper';
 import {
   ChevronDown,
   ChevronUp,
+  CloudUpload,
+  Database,
   Download,
   FileSpreadsheet,
   Search,
   Sparkles,
+  Trash2,
   Upload,
   X,
 } from 'lucide-react';
@@ -20,6 +23,10 @@ interface StateRespondentsBreakdownProps {
   onClose?: () => void;
   onDownloadSampleForState?: (stateName: string) => void;
   onTriggerUploadForState?: (stateName: string) => void;
+  onUploadExcelFileForState?: (stateName: string, file: File) => void | Promise<void>;
+  isUploadingForState?: boolean;
+  onEmptyStateData?: (stateName: string) => void | Promise<void>;
+  isEmptyingState?: boolean;
 }
 
 export const StateRespondentsBreakdown: React.FC<StateRespondentsBreakdownProps> = ({
@@ -29,11 +36,17 @@ export const StateRespondentsBreakdown: React.FC<StateRespondentsBreakdownProps>
   onClose,
   onDownloadSampleForState,
   onTriggerUploadForState,
+  onUploadExcelFileForState,
+  isUploadingForState = false,
+  onEmptyStateData,
+  isEmptyingState = false,
 }) => {
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [originFilter, setOriginFilter] = useState<'ALL' | RecordOrigin>('ALL');
   const [expandedRecordId, setExpandedRecordId] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState<number>(1);
+  const [confirmingEmpty, setConfirmingEmpty] = useState<boolean>(false);
+  const stateFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const stateRecords = useMemo(
     () => records.filter((r) => r.p2_entidad === stateName),
@@ -42,6 +55,10 @@ export const StateRespondentsBreakdown: React.FC<StateRespondentsBreakdownProps>
 
   const realCount = useMemo(
     () => stateRecords.filter((r) => r.origin === 'REAL').length,
+    [stateRecords]
+  );
+  const firebaseSavedCount = useMemo(
+    () => stateRecords.filter((r) => r.persistedInDb).length,
     [stateRecords]
   );
   const synthCount = stateRecords.length - realCount;
@@ -81,10 +98,18 @@ export const StateRespondentsBreakdown: React.FC<StateRespondentsBreakdownProps>
             <span className="tabular-nums text-slate-200">
               {stateRecords.length} personas registradas
             </span>
+            {firebaseSavedCount > 0 && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="tabular-nums text-[#00FF9D] font-semibold">
+                  {firebaseSavedCount} en Firebase
+                </span>
+              </>
+            )}
             {realCount > 0 && (
               <>
                 <span aria-hidden="true">·</span>
-                <span className="tabular-nums text-[#00FF9D]">
+                <span className="tabular-nums text-[#00F0FF]">
                   {realCount} reales / Excel
                 </span>
               </>
@@ -104,6 +129,84 @@ export const StateRespondentsBreakdown: React.FC<StateRespondentsBreakdownProps>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {onUploadExcelFileForState && (
+            <>
+              <input
+                ref={stateFileInputRef}
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) {
+                    void onUploadExcelFileForState(stateName, f);
+                  }
+                  e.target.value = '';
+                }}
+                className="hidden"
+              />
+              <button
+                type="button"
+                disabled={isUploadingForState || isEmptyingState}
+                onClick={() => stateFileInputRef.current?.click()}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#00F0FF] text-slate-950 hover:bg-[#38F5FF] transition-colors cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50"
+              >
+                <CloudUpload className="w-3.5 h-3.5" />
+                {isUploadingForState
+                  ? `Guardando en Firebase...`
+                  : `Subir Archivo a Firebase (${stateShortCode || stateName})`}
+              </button>
+            </>
+          )}
+          {!onUploadExcelFileForState && onTriggerUploadForState && (
+            <button
+              type="button"
+              onClick={() => onTriggerUploadForState(stateName)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#00F0FF] text-slate-950 hover:bg-[#38F5FF] transition-colors cursor-pointer whitespace-nowrap shrink-0"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              Subir Archivo de {stateName}
+            </button>
+          )}
+          {onEmptyStateData && stateRecords.length > 0 && (
+            confirmingEmpty ? (
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-950/70 border border-rose-500/45">
+                <span className="text-[11px] font-mono text-rose-200 whitespace-nowrap">
+                  ¿Borrar {stateRecords.length} de {stateShortCode || stateName}?
+                </span>
+                <button
+                  type="button"
+                  disabled={isEmptyingState}
+                  onClick={async () => {
+                    await onEmptyStateData(stateName);
+                    setConfirmingEmpty(false);
+                    setCurrentPage(1);
+                  }}
+                  className="px-2.5 py-1 rounded text-xs font-semibold bg-rose-600 hover:bg-rose-500 text-white cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50"
+                >
+                  {isEmptyingState ? 'Borrando...' : 'Confirmar Empty'}
+                </button>
+                <button
+                  type="button"
+                  disabled={isEmptyingState}
+                  onClick={() => setConfirmingEmpty(false)}
+                  className="px-2 py-1 rounded text-xs text-slate-300 hover:text-white bg-slate-800 cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  Cancelar
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                disabled={isEmptyingState || isUploadingForState}
+                onClick={() => setConfirmingEmpty(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/35 transition-colors cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50"
+                title={`Vaciar información de ${stateName} para subirla nuevamente`}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Empty
+              </button>
+            )
+          )}
           {filteredRecords.length > 0 && (
             <button
               type="button"
@@ -135,14 +238,27 @@ export const StateRespondentsBreakdown: React.FC<StateRespondentsBreakdownProps>
       {stateRecords.length === 0 ? (
         <div className="py-8 px-4 text-center space-y-3 rounded-lg bg-[#0B0F17]/70 border border-slate-800/80">
           <p className="text-sm text-slate-200 font-medium">
-            Aún no hay personas registradas en {stateName} dentro de esta vista.
+            El estado de {stateName} está vacío (0 registros).
           </p>
           <p className="text-xs text-slate-400 max-w-xl mx-auto">
-            Puedes subir el archivo Excel de 100 personas correspondiente a {stateName} o descargar un archivo
-            muestra listo con 100 registros para probar el estudio estatal.
+            Sube ahora el nuevo archivo Excel o CSV correspondiente a {stateName} para almacenarlo en
+            Firebase Firestore, o descarga un archivo muestra con 100 registros.
           </p>
           <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
-            {onTriggerUploadForState && (
+            {onUploadExcelFileForState && (
+              <button
+                type="button"
+                disabled={isUploadingForState}
+                onClick={() => stateFileInputRef.current?.click()}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-[#00F0FF] text-slate-950 hover:bg-[#38F5FF] cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50"
+              >
+                <CloudUpload className="w-3.5 h-3.5" />
+                {isUploadingForState
+                  ? 'Guardando en Firebase...'
+                  : `Subir Nuevo Archivo de ${stateName}`}
+              </button>
+            )}
+            {!onUploadExcelFileForState && onTriggerUploadForState && (
               <button
                 type="button"
                 onClick={() => onTriggerUploadForState(stateName)}
@@ -280,6 +396,15 @@ export const StateRespondentsBreakdown: React.FC<StateRespondentsBreakdownProps>
                             >
                               {rec.origin === 'REAL' ? 'Campo / Excel' : 'Analizada'}
                             </span>
+                            {rec.persistedInDb && (
+                              <>
+                                <span aria-hidden="true">·</span>
+                                <span className="inline-flex items-center gap-1 text-[#00FF9D] font-semibold">
+                                  <Database className="w-2.5 h-2.5" />
+                                  Firebase
+                                </span>
+                              </>
+                            )}
                           </div>
                         </td>
                         <td className="py-2.5 px-3 whitespace-nowrap">
@@ -481,6 +606,34 @@ export const StateRespondentsBreakdown: React.FC<StateRespondentsBreakdownProps>
                                   )}
                                 </div>
                               </div>
+
+                              {rec.datosArchivoOriginal &&
+                                Object.keys(rec.datosArchivoOriginal).length > 0 && (
+                                  <div className="p-3.5 rounded-lg bg-[#05070A]/90 border border-[#00FF9D]/25 space-y-2 text-xs">
+                                    <div className="font-mono font-semibold text-[#00FF9D] flex items-center gap-1.5">
+                                      <Database className="w-3.5 h-3.5" />
+                                      COLUMNAS ORIGINALES DEL ARCHIVO ALMACENADAS EN FIREBASE
+                                    </div>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                                      {Object.entries(rec.datosArchivoOriginal)
+                                        .slice(0, 16)
+                                        .map(([colKey, colVal]) => (
+                                          <div
+                                            key={colKey}
+                                            className="px-2.5 py-1.5 rounded bg-[#0B0F17] border border-slate-800/80 truncate"
+                                            title={`${colKey}: ${colVal}`}
+                                          >
+                                            <span className="font-mono text-[10px] text-slate-400 block truncate">
+                                              {colKey}
+                                            </span>
+                                            <span className="text-slate-200 font-medium truncate block">
+                                              {colVal}
+                                            </span>
+                                          </div>
+                                        ))}
+                                    </div>
+                                  </div>
+                                )}
                             </div>
                           </td>
                         </tr>

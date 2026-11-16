@@ -331,6 +331,7 @@ service cloud.firestore {
           'bloqueD',
           'bloqueE',
           'bloqueF',
+          'datosArchivoOriginal',
           'createdAt'
         ])
         && data.ownerId == request.auth.uid
@@ -351,6 +352,7 @@ service cloud.firestore {
         && isValidBloqueD(data.bloqueD)
         && isValidBloqueE(data.bloqueE)
         && isValidBloqueF(data.bloqueF)
+        && (!('datosArchivoOriginal' in data) || (data.datosArchivoOriginal is map && data.datosArchivoOriginal.size() <= 50))
         && data.createdAt == request.time;
     }
 

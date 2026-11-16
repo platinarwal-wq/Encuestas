@@ -94,6 +94,7 @@ export interface OrusResponse {
   sourceChannel?: SurveySourceChannel;
   persistedInDb?: boolean;
   registroCampo?: SurveyRegistrationMeta;
+  datosArchivoOriginal?: Record<string, string>;
 
   // Bloque A. Sobre ti y el lugar donde vives (P1–P6)
   p1_edad: AgeRange;

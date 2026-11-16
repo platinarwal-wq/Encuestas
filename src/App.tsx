@@ -10,11 +10,18 @@ import { DataExplorerModule } from './components/DataExplorerModule';
 import { StateExcelStudyModule } from './components/StateExcelStudyModule';
 import { SurveyTerminalModule } from './components/SurveyTerminalModule';
 import { SwarmSimulatorModule } from './components/SwarmSimulatorModule';
-import { exportRecordsToExcelXlsx } from './engine/excelStateProcessor';
+import { SystemCoverLogin } from './components/SystemCoverLogin';
+import { MEXICO_ENTITIES } from './data/orusCatalogs';
+import {
+  exportRecordsToExcelXlsx,
+  parseUploadedStateExcelFile,
+} from './engine/excelStateProcessor';
 import { generateInitialSeedDataset } from './engine/swarmSimulator';
 import { auth, googleProvider } from './lib/firebase';
 import {
+  emptyStateDataFromFirestore,
   saveSingleSurveyToFirestore,
+  saveStateExcelBatchToFirestore,
   subscribeUserStateBatches,
   subscribeUserSurveys,
 } from './services/orusFirestoreService';
@@ -27,6 +34,7 @@ import {
   Database,
   Download,
   FileSpreadsheet,
+  Lock,
   LogIn,
   LogOut,
   Menu,
@@ -34,9 +42,17 @@ import {
 } from 'lucide-react';
 
 const STORAGE_KEY = 'ocean_system_v43_records';
+const PORTAL_SESSION_KEY = 'ocean_portal_unlocked_v1';
 
 export default function App() {
-  const [activeModule, setActiveModule] = useState<ActiveModule>('EXCEL_BATCHES');
+  const [isSystemUnlocked, setIsSystemUnlocked] = useState<boolean>(() => {
+    try {
+      return window.sessionStorage.getItem(PORTAL_SESSION_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [activeModule, setActiveModule] = useState<ActiveModule>('DASHBOARD');
   const [mobileNavOpen, setMobileNavOpen] = useState<boolean>(false);
   const [explorerEntityFilter, setExplorerEntityFilter] = useState<string>('');
   const [bannerNotice, setBannerNotice] = useState<string | null>(null);
@@ -47,14 +63,19 @@ export default function App() {
   const [dbRecords, setDbRecords] = useState<OrusResponse[]>([]);
   const [stateBatches, setStateBatches] = useState<StateBatchRecord[]>([]);
   const [onlyDbDatasetMode, setOnlyDbDatasetMode] = useState<boolean>(false);
+  const [isSyncingPending, setIsSyncingPending] = useState<boolean>(false);
+  const [uploadingStateFromDashboard, setUploadingStateFromDashboard] = useState<string | null>(
+    null
+  );
+  const [emptyingStateName, setEmptyingStateName] = useState<string | null>(null);
 
   // Semilla y capturas locales / sintéticas
   const [localRecords, setLocalRecords] = useState<OrusResponse[]>(() => {
     try {
       const saved = window.localStorage.getItem(STORAGE_KEY);
-      if (saved) {
+      if (saved !== null) {
         const parsed = JSON.parse(saved) as OrusResponse[];
-        if (Array.isArray(parsed) && parsed.length > 0) {
+        if (Array.isArray(parsed)) {
           return parsed;
         }
       }
@@ -134,29 +155,172 @@ export default function App() {
     return [...dbRecords, ...uniqueLocal];
   }, [dbRecords, localRecords, onlyDbDatasetMode]);
 
+  const pendingLocalExcelRecords = useMemo(
+    () =>
+      localRecords.filter(
+        (r) => r.sourceChannel === 'EXCEL_STATE_BLOCK' && !r.persistedInDb
+      ),
+    [localRecords]
+  );
+
   const triggerBanner = (msg: string) => {
     setBannerNotice(msg);
     window.setTimeout(() => {
       setBannerNotice((cur) => (cur === msg ? null : cur));
-    }, 5000);
+    }, 6000);
   };
 
   const handleSignInGoogle = async (): Promise<boolean> => {
     try {
       const cred = await signInWithPopup(auth, googleProvider);
       if (cred.user) {
-        triggerBanner(`Base de datos conectada con la cuenta ${cred.user.email}.`);
+        triggerBanner(`Firebase Firestore conectado con la cuenta ${cred.user.email}.`);
         return true;
       }
       return false;
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '';
+      if (msg.includes('popup-blocked')) {
+        triggerBanner(
+          'El navegador bloqueó la ventana emergente de Google. Permite ventanas emergentes e intenta nuevamente.'
+        );
+      } else if (!msg.includes('popup-closed-by-user')) {
+        triggerBanner(
+          'No se pudo completar el inicio de sesión con Google para conectar Firebase.'
+        );
+      }
       return false;
+    }
+  };
+
+  const syncPendingExcelRecordsToFirebase = async () => {
+    if (pendingLocalExcelRecords.length === 0 || isSyncingPending) return;
+
+    if (!auth.currentUser) {
+      const ok = await handleSignInGoogle();
+      if (!ok || !auth.currentUser) return;
+    }
+
+    setIsSyncingPending(true);
+    try {
+      const byState = new Map<string, OrusResponse[]>();
+      for (const rec of pendingLocalExcelRecords) {
+        const list = byState.get(rec.p2_entidad) || [];
+        list.push(rec);
+        byState.set(rec.p2_entidad, list);
+      }
+
+      let totalSaved = 0;
+      const syncedIds = new Set<string>();
+      for (const [stateName, recs] of byState.entries()) {
+        const meta =
+          MEXICO_ENTITIES.find((e) => e.name === stateName) || MEXICO_ENTITIES[0];
+        const res = await saveStateExcelBatchToFirestore({
+          entidad: meta.name,
+          stateShortCode: meta.short,
+          fileName: `Sincronizado_${meta.short}_${recs.length}.xlsx`,
+          records: recs,
+          targetQuota: 100,
+        });
+        totalSaved += res.savedCount;
+        for (const r of recs) syncedIds.add(r.id);
+      }
+
+      setLocalRecords((prev) => prev.filter((r) => !syncedIds.has(r.id)));
+      triggerBanner(
+        `${totalSaved} registros estatales pendientes almacenados exitosamente en Firebase Firestore.`
+      );
+    } catch (err) {
+      triggerBanner(
+        err instanceof Error
+          ? `Error al sincronizar con Firebase: ${err.message}`
+          : 'No fue posible sincronizar los bloques pendientes con Firebase.'
+      );
+    } finally {
+      setIsSyncingPending(false);
+    }
+  };
+
+  // Sincronizar automáticamente cualquier archivo estatal previo en memoria local apenas haya sesión activa en Firebase
+  useEffect(() => {
+    if (currentUser && pendingLocalExcelRecords.length > 0 && !isSyncingPending) {
+      void syncPendingExcelRecordsToFirebase();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser, pendingLocalExcelRecords.length]);
+
+  const handleUploadStateExcelFromDashboard = async (stateName: string, file: File) => {
+    setUploadingStateFromDashboard(stateName);
+    try {
+      const parsed = await parseUploadedStateExcelFile(file, {
+        targetState: stateName,
+        lockAllRowsToTargetState: true,
+      });
+
+      if (!auth.currentUser) {
+        setLocalRecords((prev) => [...parsed.records, ...prev]);
+        setActiveModule('EXCEL_BATCHES');
+        triggerBanner(
+          `Archivo "${file.name}" (${parsed.records.length} personas de ${stateName}) leído. Haz clic en "Guardar pendientes en Firebase" para conectarte con Google y almacenarlo en la base de datos.`
+        );
+        return;
+      }
+
+      const meta =
+        MEXICO_ENTITIES.find((e) => e.name === stateName) || MEXICO_ENTITIES[0];
+      const saved = await saveStateExcelBatchToFirestore({
+        entidad: meta.name,
+        stateShortCode: meta.short,
+        fileName: file.name,
+        records: parsed.records,
+        targetQuota: 100,
+      });
+      triggerBanner(
+        `Archivo "${file.name}" almacenado en Firebase Firestore para ${meta.name}: ${saved.savedCount} personas (${saved.batchCode}).`
+      );
+    } catch (err) {
+      triggerBanner(
+        err instanceof Error
+          ? `Error al procesar archivo de ${stateName}: ${err.message}`
+          : `No se pudo almacenar el archivo de ${stateName} en Firebase.`
+      );
+    } finally {
+      setUploadingStateFromDashboard(null);
+    }
+  };
+
+  const handleEmptyStateData = async (stateName: string) => {
+    setEmptyingStateName(stateName);
+    try {
+      const localRemovedCount = localRecords.filter((r) => r.p2_entidad === stateName).length;
+      setLocalRecords((prev) => prev.filter((r) => r.p2_entidad !== stateName));
+
+      let cloudDeleted = 0;
+      if (auth.currentUser) {
+        const res = await emptyStateDataFromFirestore(stateName);
+        cloudDeleted = res.deletedSurveys;
+      }
+
+      const totalCleared = cloudDeleted + localRemovedCount;
+      triggerBanner(
+        `Estado ${stateName} vaciado (${totalCleared} registros eliminados${
+          cloudDeleted > 0 ? `, incluyendo ${cloudDeleted} en Firebase` : ''
+        }). Ya puedes subir nuevamente el archivo del estado.`
+      );
+    } catch (err) {
+      triggerBanner(
+        err instanceof Error
+          ? `Error al vaciar ${stateName}: ${err.message}`
+          : `No fue posible vaciar la información de ${stateName}.`
+      );
+    } finally {
+      setEmptyingStateName(null);
     }
   };
 
   const handleSignOut = async () => {
     await signOut(auth);
-    triggerBanner('Sesión de base de datos cerrada. Operando en vista previa local.');
+    triggerBanner('Sesión de Firebase cerrada. Operando en vista previa local.');
   };
 
   const handleSurveySubmitted = (newRecord: OrusResponse) => {
@@ -164,13 +328,13 @@ export default function App() {
       void saveSingleSurveyToFirestore(newRecord, 'TERMINAL')
         .then(() => {
           triggerBanner(
-            `Encuesta ${newRecord.folio} (${newRecord.p2_entidad}) almacenada en la Base de Datos.`
+            `Encuesta ${newRecord.folio} (${newRecord.p2_entidad}) almacenada en Firebase Firestore.`
           );
         })
         .catch(() => {
           setLocalRecords((prev) => [newRecord, ...prev]);
           triggerBanner(
-            `Encuesta ${newRecord.folio} registrada localmente (verifica conexión para sincronizar BD).`
+            `Encuesta ${newRecord.folio} registrada localmente (verifica conexión para sincronizar Firebase).`
           );
         });
     } else {
@@ -250,6 +414,35 @@ export default function App() {
 
   const realCount = combinedRecords.filter((r) => r.origin === 'REAL').length;
   const synthCount = combinedRecords.length - realCount;
+
+  const handlePortalAuthenticated = (keepSessionActive: boolean) => {
+    try {
+      if (keepSessionActive) {
+        window.sessionStorage.setItem(PORTAL_SESSION_KEY, 'true');
+      } else {
+        window.sessionStorage.removeItem(PORTAL_SESSION_KEY);
+      }
+    } catch {
+      // Ignorar restricciones de sessionStorage en navegadores privados
+    }
+    setIsSystemUnlocked(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleReturnToCover = () => {
+    try {
+      window.sessionStorage.removeItem(PORTAL_SESSION_KEY);
+    } catch {
+      // Ignorar restricciones de sessionStorage
+    }
+    setMobileNavOpen(false);
+    setIsSystemUnlocked(false);
+    window.scrollTo({ top: 0 });
+  };
+
+  if (!isSystemUnlocked) {
+    return <SystemCoverLogin onAuthenticated={handlePortalAuthenticated} />;
+  }
 
   return (
     <div className="min-h-screen bg-[#05070A] ocean-grid-bg text-slate-100 flex flex-col">
@@ -365,12 +558,12 @@ export default function App() {
             </div>
           </div>
 
-          {/* Panel de Base de Datos y Muestra Activa */}
+          {/* Panel de Base de Datos Firebase y Muestra Activa */}
           <div className="p-3.5 rounded-xl bg-[#05070A]/90 border border-slate-800/90 space-y-2.5 text-xs font-mono">
             <div className="flex items-center justify-between">
-              <span className="text-slate-400">BASE DE DATOS</span>
-              <span className={currentUser ? 'text-[#00FF9D]' : 'text-slate-500'}>
-                {currentUser ? 'ACTIVA' : 'SIN SESIÓN'}
+              <span className="text-slate-400">FIREBASE DB</span>
+              <span className={currentUser ? 'text-[#00FF9D]' : 'text-amber-300'}>
+                {currentUser ? 'CONECTADA' : 'CONECTAR'}
               </span>
             </div>
 
@@ -381,7 +574,7 @@ export default function App() {
                     {currentUser.email}
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-slate-400">Guardados en BD</span>
+                    <span className="text-slate-400">En Firebase</span>
                     <span className="tabular-nums font-bold text-[#00FF9D]">
                       {dbRecords.length}
                     </span>
@@ -429,7 +622,7 @@ export default function App() {
                     className="w-full inline-flex items-center justify-center gap-1.5 py-2 rounded-lg bg-[#00F0FF]/15 hover:bg-[#00F0FF]/25 text-[#00F0FF] border border-[#00F0FF]/35 font-semibold cursor-pointer"
                   >
                     <LogIn className="w-3.5 h-3.5" />
-                    Conectar Google BD
+                    Conectar Firebase
                   </button>
                 </div>
               )
@@ -448,6 +641,17 @@ export default function App() {
             <div className="flex items-center justify-between">
               <span className="text-slate-400">Encuestas analizadas</span>
               <span className="tabular-nums text-slate-300">{synthCount}</span>
+            </div>
+
+            <div className="pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={handleReturnToCover}
+                className="w-full inline-flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-800 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <Lock className="w-3 h-3" />
+                Salir a Portada
+              </button>
             </div>
           </div>
         </aside>
@@ -499,6 +703,16 @@ export default function App() {
                   );
                 })}
               </div>
+              <div className="pt-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={handleReturnToCover}
+                  className="w-full py-2.5 px-3 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-200 border border-slate-800 text-xs font-semibold inline-flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
+                >
+                  <Lock className="w-3.5 h-3.5" />
+                  Salir a Portada
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -526,6 +740,10 @@ export default function App() {
               records={combinedRecords}
               onNavigateModule={setActiveModule}
               onInspectEntityInExplorer={handleInspectEntityInExplorer}
+              onUploadStateExcelToFirebase={handleUploadStateExcelFromDashboard}
+              uploadingStateName={uploadingStateFromDashboard}
+              onEmptyStateData={handleEmptyStateData}
+              emptyingStateName={emptyingStateName}
             />
           )}
 
@@ -544,11 +762,16 @@ export default function App() {
               dbRecords={dbRecords}
               allRecords={combinedRecords}
               stateBatches={stateBatches}
+              pendingLocalExcelCount={pendingLocalExcelRecords.length}
+              isSyncingPending={isSyncingPending}
+              onSyncPendingToFirebase={syncPendingExcelRecordsToFirebase}
               onSignInGoogle={handleSignInGoogle}
               onLocalFallbackInject={handleBatchInjected}
               onInspectEntityInExplorer={handleInspectEntityInExplorer}
               onNavigateModule={setActiveModule}
               onNotify={triggerBanner}
+              onEmptyState={handleEmptyStateData}
+              emptyingStateName={emptyingStateName}
             />
           )}
 
